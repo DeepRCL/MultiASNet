@@ -9,7 +9,7 @@ This is currently a work in progress and will continuously be updated.
  - We incorporate clinically relevant information from echo reports to guide video-based feature learning, using a transformer-based tabular encoder to extract rich, structured feature representations from report data.
  - We introduce a multimodal integration approach that uses cross-attention to align structured report data features with video features. This method transforms report data into a video-relevant representation by focusing on relevant features in video-report pairs. By addressing noisy and misaligned data, our approach improves CLIP-based alignment between the two modalities.
  - We employ sample selection to avoid overfitting to noisy labels and show that incorporating this method improves performance.
- - We achieve state-of-hte-art study-level balanced accuracy and average F1 scores, outperforming existin methods
+ - We achieve state-of-the-art study-level balanced accuracy and average F1 scores, outperforming existin methods
 
 ![](images/method.png "Architecture")
 
