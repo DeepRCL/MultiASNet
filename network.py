@@ -187,25 +187,6 @@ class Network(object):
         if self.loss_type == 'cross_entropy':
             # BxC logits into Bx1 ground truth
             loss = F.cross_entropy(logits, target)
-        elif self.loss_type == 'evidential':
-            # alpha = F.softplus(logits)+1
-            # target_oh = F.one_hot(target, nclasses)
-            # mse, kl = evidential_mse(alpha, target_oh, alpha.device)
-            # loss = torch.mean(mse + 0.1*kl)
-            loss = evidential_loss(logits, target, nclasses)
-        elif self.loss_type == 'laplace_cdf':
-            # logits_categorical = laplace_cdf(F.sigmoid(logits), nclasses, logits.device)
-            # target_oh = 0.9*F.one_hot(target, nclasses) + 0.1/nclasses
-            # loss = F.binary_cross_entropy(logits_categorical, target_oh)
-            loss = laplace_cdf_loss(logits, target, nclasses)
-        elif self.loss_type == 'SupCon' or self.loss_type == 'SimCLR':
-            criterion = SupConLoss(temperature=self.temperature)
-            if torch.cuda.is_available():
-                criterion = criterion.cuda()
-            if self.contrastive_method == 'SupCon':
-                loss = criterion(logits, target)
-            elif self.contrastive_method == 'SimCLR':
-                loss = criterion(logits)
         else:
             raise NotImplementedError
         return loss
@@ -240,9 +221,6 @@ class Network(object):
         best_va_acc = 0.0 # Record the best validation metrics.
         best_va_acc_supcon = 0.0
         forget_rate = 0.0625
-        best_cont_loss = 1000
-
-        gradient_accumulation_steps = 9
             
         for epoch in range(self.config['num_epochs']):
             #losses_AS = []
@@ -260,69 +238,44 @@ class Network(object):
                     target_B = data[3]
                     target_age = data[4]
 
-                    # Cross Entropy Training
-                    if self.config['cotrastive_method'] == 'CE' or self.config['cotrastive_method'] == "Linear":
-                        # Transfer data from CPU to GPU.
-                        if self.config['use_cuda']:
-                            if self.config['model'] == 'slowfast':
-                                cine = [c.cuda() for c in cine]
-                            else:
-                                cine = cine.cuda()
-                            tab_data = tab_data.cuda()
-                            target_AS = target_AS.cuda()
-                            target_B = target_B.cuda()
-                            target_age = target_age.cuda()
+                    # Transfer data from CPU to GPU.
+                    if self.config['use_cuda']:
+                        cine = cine.cuda()
+                        tab_data = tab_data.cuda()
+                        target_AS = target_AS.cuda()
+                        target_B = target_B.cuda()
+                        target_age = target_age.cuda()
 
-                        if self.config['model'] == "FTC_TAD":
-                            pred_AS,entropy_attention,outputs, _, ca_preds, learned_emb, ca_embed = self.model(cine, tab_data, target_B, target_age, split='Train') # Bx3xTxHxW
-                            # Calculate loss between learned joint embeddings
-                            ca_emb_loss, _, _ = self.embed_loss_cos(learned_emb, ca_embed, target_AS)
+                    if self.config['model'] == "FTC_TAD":
+                        pred_AS,entropy_attention,outputs, _, ca_preds, learned_emb, ca_embed = self.model(cine, tab_data, target_B, target_age, split='Train') # Bx3xTxHxW
+                        # Calculate loss between learned joint embeddings
+                        ca_emb_loss, _, _ = self.embed_loss_cos(learned_emb, ca_embed, target_AS)
 
-                            # Calculating temporal coherent npair loss
-                            similarity_matrix = (torch.bmm(outputs,outputs.permute((0,2,1)))/1024)
-                            self.pos_e = self.pos.repeat(len(pred_AS),1,1)
-                            self.neg_e = self.neg.repeat(len(pred_AS),1,1)
-                            npair_loss = torch.mean(-torch.sum(self.pos_e*similarity_matrix,dim =2) + 
-                               torch.log(torch.exp(torch.sum(self.pos_e*similarity_matrix,dim=2))+
-                               torch.sum(self.neg_e*torch.exp(self.neg_e*similarity_matrix),dim=2)), dim = 1)
+                        # Calculating temporal coherent npair loss
+                        similarity_matrix = (torch.bmm(outputs,outputs.permute((0,2,1)))/1024)
+                        self.pos_e = self.pos.repeat(len(pred_AS),1,1)
+                        self.neg_e = self.neg.repeat(len(pred_AS),1,1)
+                        npair_loss = torch.mean(-torch.sum(self.pos_e*similarity_matrix,dim =2) + 
+                            torch.log(torch.exp(torch.sum(self.pos_e*similarity_matrix,dim=2))+
+                            torch.sum(self.neg_e*torch.exp(self.neg_e*similarity_matrix),dim=2)), dim = 1)
 
-                            if self.config["coteaching"] == True:
-                                if self.config['abstention'] == True:
-                                    loss_vid, loss_tab = loss_coteaching(pred_AS, ca_preds, target_AS, forget_rate, self.abstention_loss)
-                                else:    
-                                    loss_vid, loss_tab = loss_coteaching(pred_AS, ca_preds, target_AS, forget_rate)
-                            else:
-                                loss_vid = self._get_loss(pred_AS, target_AS, self.num_classes_AS)
-                                loss_tab = self._get_loss(ca_preds, target_AS, self.num_classes_AS)
-
-                            loss = 0.5*ca_emb_loss + loss_vid + loss_tab + 0.05*(torch.mean(entropy_attention)) +0.1*torch.mean(npair_loss)
-                            losses += [loss] 
-                        
+                        if self.config["coteaching"] == True:
+                            if self.config['abstention'] == True:
+                                loss_vid, loss_tab = loss_coteaching(pred_AS, ca_preds, target_AS, forget_rate, self.abstention_loss)
+                            else:    
+                                loss_vid, loss_tab = loss_coteaching(pred_AS, ca_preds, target_AS, forget_rate)
                         else:
-                            pred_AS = self.model(cine, tab_data, split='Train') # Bx3xTxHxW
-                            loss = self._get_loss(pred_AS, target_AS, self.num_classes_AS)
-                            losses += [loss]
-                    # Contrastive Learning
+                            loss_vid = self._get_loss(pred_AS, target_AS, self.num_classes_AS)
+                            loss_tab = self._get_loss(ca_preds, target_AS, self.num_classes_AS)
+
+                        loss = 0.5*ca_emb_loss + loss_vid + loss_tab + 0.05*(torch.mean(entropy_attention)) +0.1*torch.mean(npair_loss)
+                        losses += [loss] 
+                    
                     else:
-                        cines = torch.cat([cine[0], cine[1]], dim=0)
-                        if self.config['use_cuda']:
-                            cines = cines.cuda()
-                            tab_data = tab_data.cuda()
-                            target_AS = target_AS.cuda()
-                            target_B = target_B.cuda()
-                        bsz = target_AS.shape[0]
-                        features = self.model(cines, tab_data, split='Train') # Bx3xTxHxW
-                        f1, f2 = torch.split(features, [bsz, bsz], dim=0)
-                        features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
-                        if self.config['cotrastive_method'] == 'SupCon':
-                            loss = self._get_loss(features, target_AS, self.num_classes_AS)
-                        elif self.config['cotrastive_method'] == 'SimCLR':
-                            loss = self._get_loss(features, target_AS, self.num_classes_AS)
-                        else:
-                            raise ValueError('contrastive method not supported: {}'.
-                                             format(self.config['cotrastive_method']))
-
+                        pred_AS = self.model(cine, tab_data, split='Train') # Bx3xTxHxW
+                        loss = self._get_loss(pred_AS, target_AS, self.num_classes_AS)
                         losses += [loss]
+
                         
                     # Calculate the training accuracy
                     _, predicted = torch.max(pred_AS, 1)
@@ -341,68 +294,36 @@ class Network(object):
                     pbar.set_postfix_str("loss={:.4f}".format(loss.item()))
                     pbar.update()
 
-            #loss_avg_AS = torch.mean(torch.stack(losses_AS)).item()
-            #loss_avg_B = torch.mean(torch.stack(losses_B)).item()
             loss_avg = torch.mean(torch.stack(losses)).item()
-            #acc_AS, f1_B, val_loss = self.test(loader_va, mode="val")
-            if self.config['cotrastive_method'] == 'CE' or self.config['cotrastive_method'] == 'Linear':
-                ## Validation Data Evaluation 
-                acc_AS, val_loss = self.test(loader_va, mode="val")
-                if self.config['use_wandb']:
-                    wandb.log({"tr_loss":loss_avg, "val_loss":val_loss, "val_AS_acc":acc_AS})
-                    # wandb.log({"tr_loss_AS":loss_avg_AS, "tr_loss_B":loss_avg_B, "tr_loss":loss_avg,
-                    #            "val_loss":val_loss, "val_B_f1":f1_B, "val_AS_acc":acc_AS})
-                ## Test Data Evaluation    
-                acc_AS_te, te_loss = self.test(loader_te, mode="val")
-                if self.config['use_wandb']:
-                    wandb.log({ "te_loss":te_loss, "test_AS_acc":acc_AS_te})
+            
+            ## Validation Data Evaluation 
+            acc_AS, val_loss = self.test(loader_va, mode="val")
+            if self.config['use_wandb']:
+                wandb.log({"tr_loss":loss_avg, "val_loss":val_loss, "val_AS_acc":acc_AS})
 
-                # Save model every epoch.
-                self._save(self.checkpts_file)
+            ## Test Data Evaluation    
+            acc_AS_te, te_loss = self.test(loader_te, mode="val")
+            if self.config['use_wandb']:
+                wandb.log({ "te_loss":te_loss, "test_AS_acc":acc_AS_te})
 
-                # Early stopping strategy.
-                if acc_AS > best_va_acc:
-                    # Save model with the best accuracy on validation set.
-                    best_va_acc = acc_AS
-                    #best_B_f1 = f1_B
-                    self._save(self.bestmodel_file)
-                # print(
-                #     "Epoch: %3d, loss: %.5f/%.5f, val loss: %.5f, acc: %.5f/%.5f, top AS acc: %.5f/%.5f"
-                #     % (epoch, loss_avg_AS, loss_avg_B, val_loss, acc_AS, f1_B, best_va_acc, best_B_f1)
-                # )
-                print(
-                    "Epoch: %3d, loss: %.5f, train acc: %.5f, val loss: %.5f, acc: %.5f, top AS acc: %.5f"
-                    % (epoch, loss_avg, (correct_predictions / total_samples), val_loss, acc_AS, best_va_acc)
-                ) 
+            # Save model every epoch.
+            self._save(self.checkpts_file)
 
-                # Recording training losses and validation performance.
-                self.train_losses += [loss_avg]
-                self.valid_oas += [acc_AS]
-                self.idx_steps += [epoch]
-                
-            elif self.config['cotrastive_method'] == 'SupCon' or self.config['cotrastive_method'] == 'SimCLR':
-                if epoch%5==0:
-                    val_acc = validation_constructive(self.model,self.config)
-                    if self.config['use_wandb']:
-                        wandb.log({"AMI":val_acc['AMI'],"NMI":val_acc['NMI'],
-                                   "precision_at_1":val_acc['precision_at_1']})
-                if (val_acc['precision_at_1'] > best_va_acc_supcon and self.config['cotrastive_method'] == 'SupCon'):
-                    # Save model with the best accuracy on validation set.
-                    best_va_acc_supcon = val_acc['precision_at_1']
-                    self._save(self.bestmodel_file_contrastive)
-                    print('Model Saved')
-                
-                if self.config['cotrastive_method'] == 'SimCLR':
-                    self._save(self.bestmodel_file_contrastive)
-                    print('Model Saved')
-                    
-                if self.config['use_wandb']:
-                    wandb.log({"contrastive_loss":loss_avg})
-                    
-                print(
-                    "Epoch: %3d, loss: %.5f,precision_at_1: %.5f"
-                    % (epoch, loss_avg,val_acc['precision_at_1'])
-                ) 
+            # Early stopping strategy.
+            if acc_AS > best_va_acc:
+                # Save model with the best accuracy on validation set.
+                best_va_acc = acc_AS
+                #best_B_f1 = f1_B
+                self._save(self.bestmodel_file)
+            print(
+                "Epoch: %3d, loss: %.5f, train acc: %.5f, val loss: %.5f, acc: %.5f, top AS acc: %.5f"
+                % (epoch, loss_avg, (correct_predictions / total_samples), val_loss, acc_AS, best_va_acc)
+            ) 
+
+            # Recording training losses and validation performance.
+            self.train_losses += [loss_avg]
+            self.valid_oas += [acc_AS]
+            self.idx_steps += [epoch] 
                
             
             # modify the learning rate
@@ -447,61 +368,24 @@ class Network(object):
                 else:
                     pred_AS = self.model(cine, tab_data, split='Test') # Bx3xTxHxW
 
-                if self.config['abstention'] == True:
-                    loss = self.abstention_loss.compute(pred_AS, target_AS)
-                else:
-                    loss = self._get_loss(pred_AS, target_AS, self.num_classes_AS)
-                losses += [loss]
-
-            # Contrastive Learning
-            else:
-                cines = torch.cat([cine[0], cine[1]], dim=0)
-                if self.config['use_cuda']:
-                    cines = cines.cuda()
-                    tab_data = tab_data.cuda()
-                    target_AS = target_AS.cuda()
-                    target_B = target_B.cuda()
-                bsz = target_AS.shape[0]
-                features = self.model(cines) # Bx3xTxHxW
-                f1, f2 = torch.split(features, [bsz, bsz], dim=0)
-                features = torch.cat([f1.unsqueeze(1), f2.unsqueeze(1)], dim=1)
-                if self.config['cotrastive_method'] == 'SupCon':
-                    loss = self._get_loss(features, target_AS, self.num_classes_AS)
-                elif self.config['cotrastive_method'] == 'SimCLR':
-                    loss = self._get_loss(features, target_AS, self.num_classes_AS)
-                else:
-                    raise ValueError('contrastive method not supported: {}'.
-                                     format(self.config['cotrastive_method']))
+                loss = self._get_loss(pred_AS, target_AS, self.num_classes_AS)
                 losses += [loss]
             
-            if self.config["abstention"]:
-                pred_AS = pred_AS[:, : self.num_classes_AS]
-
-            #argmax_pred_AS = torch.argmax(pred_AS, dim=1)
-            #argmax_pred_B = torch.argmax(pred_B, dim=1)
-            if self.config['cotrastive_method'] == 'CE' or self.config['cotrastive_method'] == 'Linear':
-                argm_AS, _, _, _, _, _ = self._get_prediction_stats(pred_AS, self.num_classes_AS)
-                #argm_B, _, _, _, _ = self._get_prediction_stats(pred_B, 2)
-                conf_AS = utils.update_confusion_matrix(conf_AS, target_AS.cpu(), argm_AS.cpu())
-                #conf_B = utils.update_confusion_matrix(conf_B, target_B.cpu(), argm_B.cpu())
+            argm_AS, _, _, _, _, _ = self._get_prediction_stats(pred_AS, self.num_classes_AS)
+            conf_AS = utils.update_confusion_matrix(conf_AS, target_AS.cpu(), argm_AS.cpu())
             
             preds.append(argm_AS.cpu().numpy())
             gt.append(target_AS.cpu().numpy())
-        if self.config['cotrastive_method'] == 'CE' or self.config['cotrastive_method'] == 'Linear':    
-            loss_avg = torch.mean(torch.stack(losses)).item()
-            preds = [x for xs in preds for x in xs]
-            gt = [x for xs in gt for x in xs]
-            acc_AS = balanced_accuracy_score(gt, preds) #utils.balanced_acc_from_confusion_matrix(conf_AS)
-            print(conf_AS)
-            #f1_B = utils.f1_from_confusion_matrix(conf_B)
 
-            # Switch the model into training mode
-            self.model.train()
-            return acc_AS, loss_avg
-        else:
-            loss_avg = torch.mean(torch.stack(losses)).item()
-            self.model.train()
-            return loss_avg
+        loss_avg = torch.mean(torch.stack(losses)).item()
+        preds = [x for xs in preds for x in xs]
+        gt = [x for xs in gt for x in xs]
+        acc_AS = balanced_accuracy_score(gt, preds) 
+        print(conf_AS)
+
+        # Switch the model into training mode
+        self.model.train()
+        return acc_AS, loss_avg
     
     @torch.no_grad()
     def test_comprehensive(self, loader, mode="test",record_embeddings=False):
@@ -555,11 +439,6 @@ class Network(object):
                 pred_AS,entropy_attention,outputs, att_weight, _, _, embedding = self.model(x=cine, tab_x=tab_info, bicuspid=target_B, age=target_age, split='Test') # Bx3xTxHxW
             else:
                 pred_AS = self.model(cine, tab_info, split='Test') # Bx3xTxHxW
-
-            # Compute CE loss
-            '''ce_loss = F.cross_entropy(ca_preds, target_AS.long()).cpu().item()
-            ce_losses.append(ce_loss)
-            cine_videos.append((ce_loss, cine.cpu().numpy(), data_info['path'][0]))'''
             
             # collect the model prediction info
             argm, max_p, ent, vac, uni, logits = self._get_prediction_stats(pred_AS, self.num_classes_AS)
@@ -575,43 +454,6 @@ class Network(object):
             
             if record_embeddings:
                 embeddings += [embedding[0].squeeze().cpu().numpy()]
-
-        # Flatten and collect individual indices
-        '''flat_most = [idx.item() for batch in self.model.module.cross_attention.most_attended_list for idx in batch.view(-1)]
-        flat_least = [idx.item() for batch in self.model.module.cross_attention.least_attended_list for idx in batch.view(-1)]
-
-        # Count occurrences
-        most_common = Counter(flat_most).most_common(5)
-        least_common = Counter(flat_least).most_common(5)
-
-        # Feature columns from your provided index mapping
-        feature_columns = [
-            'VPeak', 'AVA', 'AO.MG', 'AoPG', 'heart_rate', 'age', 'BSA', 'LA',
-            'LVMass', 'LVOV', 'LVs', 'ROOT', 'Rhythm', 'Aortic Regurgitation', 'LV',
-            'Mitral Regurgitation', 'Bicuspid', 'Sclerotic', 'AV restricted',
-            'AV Thickening', 'AV Prosthetic', 'AV Calcified', 'AV Vegetation',
-            'MV stenosis', 'MV sam', 'MV restricted', 'MV tethered', 'RV Sys Func',
-            'RV Hypokinesis', 'MV thickening', 'MV prosthetic', 'MV vegetation',
-            'RiskFactor_smoking', 'High BP', 'High Cholesterol', 'Diabetes'
-        ]
-
-        # Map indices to feature names
-        most_common_features = [(feature_columns[idx], count) for idx, count in most_common]
-        least_common_features = [(feature_columns[idx], count) for idx, count in least_common]
-
-        print("Top 5 most attended features:", most_common_features)
-        print("Top 5 least attended features:", least_common_features)'''
-
-        # Sort by CE loss and keep top 5%
-        '''top_5_percent = int(len(ce_losses) * 0.0625)
-        top_cines = sorted(zip(cine_videos, pred_AS_arr), key=lambda x: x[0][0], reverse=True)[:top_5_percent]
-
-        # Save the high CE cine videos
-        for (ce_loss, cine_video, file_name), preds in top_cines:
-            save_path = os.path.join(save_dir, f"{os.path.basename(file_name).replace('.nii', '')}_CE{ce_loss:.2f}_{preds}.gif")
-            self.save_video(cine_video.squeeze(), save_path, pred_AS)
-
-        print(f"Saved top {top_5_percent} highest CE loss cine videos to {save_dir}")'''
 
         # compile the information into a dictionary
         d = {'path':fn, 'id':patient, 'echo_id': echo, 'view':view, 'age':age, 'as':as_label, 'bicuspid': bicuspid ,

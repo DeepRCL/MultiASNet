@@ -1,10 +1,8 @@
 from torch.nn.modules.activation import LeakyReLU
 from torch.nn.modules.dropout import Dropout
-#from transformers import BertConfig, BertModel
 import torch
 import torch.nn as nn
 import torchvision
-#from ResNetAE.ResNetAE import ResNetAE
 from FTC.posembedding import build_position_encoding
 from FTC.deformable_transformer import DeformableTransformer
 from FTC.util.misc import NestedTensor, construct_ASTransformer
@@ -57,7 +55,6 @@ class CrossAttention(nn.Module):
         b, f, _ = x.shape
         h = self.heads
         kv_input = self.tab_norm(tab_x)
-        # q, k, v = self.to_q(x), self.to_k(kv_input), self.to_v(kv_input)
         q = self.norm_q(self.to_q(self.vid_norm(x)))
         k = self.norm_k(self.to_k(kv_input))
         v = self.to_v(kv_input)
@@ -93,25 +90,9 @@ class EmbeddingMappingFunction(nn.Module):
         self.fc1 = nn.Linear(video_dim, hidden_dim)
         self.relu = nn.ReLU()
         self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        #self.fc3 = nn.Linear(hidden_dim, tabular_dim)
         
         self.layernorm = nn.LayerNorm(hidden_dim)
 
-        # Self-attention layers
-        '''self.transformer_layer = nn.TransformerEncoderLayer(
-            d_model=video_dim, 
-            nhead=num_heads, 
-            dim_feedforward=hidden_dim,
-            dropout=0.1
-        )
-        self.transformer_encoder = nn.TransformerEncoder(
-            self.transformer_layer, 
-            num_layers=num_transformer_layers
-        )
-
-        # Feed-forward layer
-        self.fc = nn.Linear(video_dim, tabular_dim)
-        self.layernorm = nn.LayerNorm(video_dim)'''
 
     def forward(self, x):
         residual = x  # Preserve the input as the residual
@@ -121,18 +102,9 @@ class EmbeddingMappingFunction(nn.Module):
         x = self.relu(x)
         x = self.fc2(x)
         x = self.layernorm(x)
-        #x = self.relu(x)
-        #x = self.fc3(x)
 
         # Add the residual connection
         x += residual
-
-        # Apply self-attention using Transformer
-        '''x = self.transformer_encoder(x)
-
-        # Feed-forward layer
-        x = self.fc(x)
-        # x = self.layernorm(x)'''
 
         return x
     
@@ -142,29 +114,8 @@ class Reduce(nn.Module):
     
     def forward(self,x):
         
-        # sorted_scores,_ = x.sort(descending=True, dim=1)
-        # topk_scores = sorted_scores[:, :9, :]
-        # x = torch.mean(topk_scores, dim=1)
         x = x.mean(dim=1)
         return x
-
-class Inception(nn.Module):
-    def __init__(self, emb_dim, in_channels=1, out_channels_per_conv=16):
-        super().__init__()
-        
-        self.five       = nn.Conv2d(in_channels=in_channels, out_channels=out_channels_per_conv, kernel_size=(5,emb_dim), stride=(1,1), padding=(2,0), bias=False)
-        self.three      = nn.Conv2d(in_channels=in_channels, out_channels=out_channels_per_conv, kernel_size=(3,emb_dim), stride=(1,1), padding=(1,0), bias=False)
-        self.stride2    = nn.Conv2d(in_channels=in_channels, out_channels=out_channels_per_conv, kernel_size=(3,emb_dim), stride=(1,2), padding=(1,0), bias=False)
-    
-    def forward(self,x):
-        out_five    = self.five(x)
-        out_three   = self.three(x)
-        out_stride2 = self.stride2(x)
-        
-        output = torch.cat((out_five, out_three, out_stride2),dim=1).permute(0,3,2,1) # Cat on channel dim
-        return output
-    
-
         
 # New Multi Branch Auto Encoding Transformer
 class FTC(nn.Module):
@@ -184,23 +135,12 @@ class FTC(nn.Module):
                 age = True):
         super(FTC, self).__init__()
         
-        last_features = 4
         self.pretrained = pretrained
         self.use_tab = use_tab
         self.tab_input_dim = tab_input_dim
         self.tab_emb_dims = tab_emb_dims
         
         self.AE = AE
-        if self.pretrained == True:
-            from pathlib import Path
-            checkpoint = torch.load(Path('/AS_Neda/FTC/logs/resnet18/best_model_cont.pth'))
-            prefix = 'module.model.'
-            n_clip = len(prefix)
-            adapted_dict = {k[n_clip:]: v for k, v in checkpoint["model"].items()
-                            if k.startswith(prefix)}
-            self.AE.load_state_dict(adapted_dict, strict=False)
-            print('Stage1 weights Loaded res18')
-
         self.pos_embed = pos_embed
         self.transformer = transformer
 
@@ -235,11 +175,8 @@ class FTC(nn.Module):
             nn.LayerNorm(embedding_dim//2),
             nn.LeakyReLU(negative_slope=0.05, inplace=True),
             nn.Linear(in_features=embedding_dim//2, out_features=1, bias=True),
-            # nn.Softmax(dim=2),
-            # Reduce(),
             )
 
-        #self.vf = frames_per_video
         self.em = embedding_dim
 
         # load the pretrained weights TODO: Make this a config
@@ -255,25 +192,6 @@ class FTC(nn.Module):
                                                     loaded_num_special_tokens, loaded_attn_dropout, loaded_ff_dropout,
                                                     loaded_hidden_dim, loaded_classification,
                                                     loaded_numerical_bins, loaded_emb_type)
-            
-            # Get model and checkpoint state dicts
-            model_state = self.tab_embed.state_dict()
-            checkpoint = torch.load('../as_transformer.pth')  # or map_location as needed
-            checkpoint_state = checkpoint['state_dict'] if 'state_dict' in checkpoint else checkpoint
-
-            # Collect all keys
-            all_keys = set(model_state.keys()).union(set(checkpoint_state.keys()))
-
-            print(f"{'Parameter Name':<70} {'Checkpoint Shape':<25} {'Model Shape':<25}")
-            print("-" * 120)
-
-            for key in sorted(all_keys):
-                ckpt_shape = checkpoint_state[key].shape if key in checkpoint_state else "MISSING"
-                model_shape = model_state[key].shape if key in model_state else "MISSING"
-                print(f"{key:<70} {str(ckpt_shape):<25} {str(model_shape):<25}")
-
-            #for name, param in self.tab_embed.named_parameters():
-            #    print(f"{name}: {param.shape}")
             
             self.tab_embed.load_state_dict(torch.load('../as_transformer.pth'))
             
@@ -296,39 +214,11 @@ class FTC(nn.Module):
         self.map_embed = EmbeddingMappingFunction(embedding_dim, embedding_dim, embedding_dim)
         self.vt_proj_head = EmbeddingMappingFunction(embedding_dim, embedding_dim, embedding_dim)
 
-        # bicuspid valve prompt
-        '''self.bicuspid = bicuspid
-        # age prompt
-        self.age = age
-
-        # bicuspid valve MLP
-        if bicuspid:
-            self.bicuspid_mlp = nn.Sequential(
-                nn.Linear(1, embedding_dim//2),
-                nn.ReLU(),
-                nn.Linear(embedding_dim//2, embedding_dim)
-            )
-
-        # age MLP
-        if age:
-            self.age_mlp = nn.Sequential(
-                nn.Linear(1, embedding_dim//2),
-                nn.ReLU(),
-                nn.Linear(embedding_dim//2, embedding_dim)
-            )'''
-
     def forward(self, x, tab_x, bicuspid, age, split):   
         # Video dimension (B x F x C x H x W)
         x = x.permute(0,2,1,3,4)
         
         nB, nF, nC, nH, nW = x.shape
-
-        # bisucpid prompt
-        '''if self.bicuspid:
-            bicuspid = bicuspid.unsqueeze(1).unsqueeze(2).unsqueeze(3).unsqueeze(4)  # (b, 1, 1, 1, 1)
-            output_tensor = bicuspid.expand(-1, -1, 3, -1, -1)  # (b, 1, c, 1, 1)
-
-            x = output_tensor + x'''
 
         # Merge batch and frames dimension
         x = x.contiguous().view(nB*nF,nC,nH,nW)
@@ -337,7 +227,6 @@ class FTC(nn.Module):
             # with torch.no_grad():
             # (BxF) x C x H x W => (BxF) x Emb
             embeddings = self.AE(x).squeeze()
-            #embeddings = torch.nn.functional.normalize(embeddings, dim=0)
         else:
             # (BxF) x C x H x W => (BxF) x Emb
             embeddings = self.AE(x).squeeze()
@@ -345,25 +234,10 @@ class FTC(nn.Module):
             
         embeddings_reshaped = embeddings.view(nB, nF, self.em )
         embeddings_reshaped = embeddings_reshaped.permute(0,2,1)
-
-        #  B x F x Emb
-        '''if self.bicuspid and self.age:
-            bicuspid = bicuspid.float().unsqueeze(1) # (b, 1)
-            age = age.float().unsqueeze(1)
-            age_tensor = age.expand(-1, 1024)
-            age_tensor = age_tensor.unsqueeze(1) # (b, 1, 1024)
-            #output_tensor = self.bicuspid_mlp(bicuspid)  # (b, 1024)
-            output_tensor = bicuspid.expand(-1, 1024)  # (b, 1024)
-            output_tensor = output_tensor.unsqueeze(1) #(b, 1, 1024)
-            output_tensor = torch.cat((output_tensor, age_tensor), dim=1) #(b, 2, 1024)'''
-            #output_tensor = output_tensor.transpose(1, 2)
-
-            #result = torch.cat((output_tensor, embeddings_reshaped), dim=-1)
             
         # Creatining porsitional embedding and nested tensor
         nF = 32
         mask = torch.ones((nB, nF), dtype=torch.bool).cuda()
-        #embeddings_reshaped = embeddings_reshaped.cuda()
         samples = NestedTensor(embeddings_reshaped, mask)
         pos = self.pos_embed(samples).cuda()
         
@@ -402,81 +276,36 @@ class FTC(nn.Module):
             learned_joint_emb = outputs
             ca_outputs = outputs
 
-        method = "attention"   # "average","emb_mag","attention",
-        if method == "average":
-            # B x F x Emb => B x T x 4
-            as_prediction = self.aorticstenosispred(outputs)
-            # B x T x 4   =>  B x 4
-            as_prediction = as_prediction.mean(dim=1)
-            
-        elif method == "emb_mag":
-            # B x F x Emb => B x T x 4
-            as_prediction = self.aorticstenosispred(outputs)
-            # B x T x 4   =>  B x K x 4
-            idx_act_feat = max_index[:,:9].unsqueeze(2).expand([-1, -1, 4])
-            as_prediction = as_prediction.gather(1,idx_act_feat)
-            as_prediction = as_prediction.mean(dim=1)
-            
-        elif method == "attention":
-            '''if self.bicuspid:
-                bicuspid = bicuspid.float().unsqueeze(1) # (b, 1)
-                #output_tensor = self.bicuspid_mlp(bicuspid)  # (b, 1024)
-                bv_output_tensor = bicuspid.expand(-1, 1024)  # (b, 1024)
-                bv_output_tensor = bv_output_tensor.unsqueeze(1)
-                #output_tensor = output_tensor.transpose(1, 2)
-                learned_joint_emb = torch.cat((bv_output_tensor, learned_joint_emb), dim=1)
-            
-            if self.age:
-                age = age.float().unsqueeze(1) # (b, 1)
-                age_output_tensor = self.age_mlp(age)  # (b, 1024)
-                #age_output_tensor = age.expand(-1, 1024)  # (b, 1024)
-                age_output_tensor = age_output_tensor.unsqueeze(1)
-                #output_tensor = output_tensor.transpose(1, 2)
-                learned_joint_emb = torch.cat((age_output_tensor, learned_joint_emb), dim=1)'''
+        # B x F x Emb => B x T x 4
+        as_prediction = self.aorticstenosispred(learned_joint_emb)
 
-            # B x F x Emb => B x T x 4
-            as_prediction = self.aorticstenosispred(learned_joint_emb)
-
-            # cross attention preds
-            if split=='Train':
-                if self.use_tab:
-                    #ca_outputs = torch.cat((bv_output_tensor, ca_outputs), dim=1)
-                    #ca_outputs = torch.cat((age_output_tensor, ca_outputs), dim=1)
-                    as_ca_predictions = self.aorticstenosispred(ca_outputs)
-            else:
+        # cross attention preds
+        if split=='Train':
+            if self.use_tab:
                 #ca_outputs = torch.cat((bv_output_tensor, ca_outputs), dim=1)
                 #ca_outputs = torch.cat((age_output_tensor, ca_outputs), dim=1)
-                as_ca_predictions = as_prediction
-            
-            # attention weights B x F x 1
-            att_weight = self.attentionweights(learned_joint_emb)
-            ca_att_weight = self.attentionweights(ca_outputs)
+                as_ca_predictions = self.aorticstenosispred(ca_outputs)
+        else:
+            #ca_outputs = torch.cat((bv_output_tensor, ca_outputs), dim=1)
+            #ca_outputs = torch.cat((age_output_tensor, ca_outputs), dim=1)
+            as_ca_predictions = as_prediction
+        
+        # attention weights B x F x 1
+        att_weight = self.attentionweights(learned_joint_emb)
+        ca_att_weight = self.attentionweights(ca_outputs)
 
-            #print(att_weight.shape,outputs.shape)
-            att_weight = nn.functional.softmax(att_weight, dim=1)
-            ca_att_weight = nn.functional.softmax(ca_att_weight, dim=1)
-            # B x T x 4   =>  B x 4
-            as_prediction = (as_prediction * att_weight).sum(1)
-            as_ca_predictions = (as_ca_predictions * ca_att_weight).sum(1)
-            # Calculating the entropy for attention
-            entropy_attention = torch.sum(-att_weight*torch.log(att_weight), dim=1)
-            
-            # Calculate the embeddings for CLIP loss
-            learned_joint_emb = (learned_joint_emb * att_weight).sum(1)
-            ca_outputs = (ca_outputs * ca_att_weight).sum(1)
-
-        elif method == "attention_resbranch":
-            # B x F x Emb => B x T x 4
-            as_prediction = self.aorticstenosispred(outputs)
-            
-            # attention weights B x F x 1
-            att_weight = self.attentionweights(embeddings_reshaped.permute(0,2,1))
-            att_weight = nn.functional.softmax(att_weight, dim=1)
-            # B x T x 4   =>  B x 4
-            as_prediction = (as_prediction * att_weight).sum(1)
-            
-            # Calculating the entropy for attention
-            entropy_attention = torch.sum(-att_weight*torch.log(att_weight), dim=1)
+        #print(att_weight.shape,outputs.shape)
+        att_weight = nn.functional.softmax(att_weight, dim=1)
+        ca_att_weight = nn.functional.softmax(ca_att_weight, dim=1)
+        # B x T x 4   =>  B x 4
+        as_prediction = (as_prediction * att_weight).sum(1)
+        as_ca_predictions = (as_ca_predictions * ca_att_weight).sum(1)
+        # Calculating the entropy for attention
+        entropy_attention = torch.sum(-att_weight*torch.log(att_weight), dim=1)
+        
+        # Calculate the embeddings for CLIP loss
+        learned_joint_emb = (learned_joint_emb * att_weight).sum(1)
+        ca_outputs = (ca_outputs * ca_att_weight).sum(1)
 
         return as_prediction,entropy_attention,outputs,att_weight,as_ca_predictions, learned_joint_emb, ca_outputs
 
@@ -528,8 +357,7 @@ def get_model_tad(emb_dim,
                 cross_attention=cross_attention, 
                 tab_input_dim=tab_input_dim, 
                 tab_emb_dims=tab_emb_dims,
-                loaded_parameters=loaded_parameters, 
-                pretrained=False,
+                loaded_parameters=loaded_parameters,
                 multimodal=multimodal) 
     
     return model

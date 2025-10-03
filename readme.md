@@ -18,7 +18,12 @@ The main folder contains the code implemented for the private dataset. Implement
 ### Dataloader
 You can add your own dataloader or adjust the implementation of dataloader/as_dataloader.py. Make sure to import your dataloader in train.py.
 ### Model
-The defined models are available in folder named model. The implementation of final model mentioned in the paper is in model/FTC_TAD. There also more choices for model selection and you can choose the model you desire by changing the name of model in get_config.py and add that model in get_model.py.
+The defined models are available in folder named model. The implementation of final model mentioned in the paper is in model/FTC_TAD. 
+
+For the **tabular transformer**, make sure to:
+- Save the trained weights in `as_transformer.pth`
+- Save the model initialization parameters in `model_parameters.pth`
+
 ### Wandb
 If you want to enable the wandb log place config['wandb']= True in get_config.py and replace your directory and project name accordingly in train.py.
 ### Config

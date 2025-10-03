@@ -5,9 +5,9 @@ def get_config():
     config['mode'] = "train"
     config['use_wandb'] = False
     config['use_cuda'] = True
-    config['log_dir'] = "/workspace/miccai2024_savedmodels/FTC/logs/"
-    config['model_load_dir'] = "/workspace/miccai2024_savedmodels/FTC/logs/4_class_coteaching"
-    config['best_model_dir'] = "/workspace/miccai2024_savedmodels/FTC/logs/4_class_coteaching"
+    config['log_dir'] = ""
+    config['model_load_dir'] = ""
+    config['best_model_dir'] = ""
 
     # Hyperparameters for dataset. 
     config['view'] = 'all' # all/plax/psax
@@ -26,13 +26,8 @@ def get_config():
     config['drop_cols'] = []
     config['categorical_cols'] = []
     
-
-    
-    # Hyperparameters for bicuspid valve branch
-    # config['bicuspid_weight'] = 1.0 # default is 1.0
     
     # Hyperparameters for Contrastive Learning
-    config['cotrastive_method'] = 'CE' #'CE'/'SupCon'/'SimCLR'/Linear'
     config['feature_dim'] = 1024
     config['temp'] = 0.1
 
@@ -44,11 +39,18 @@ def get_config():
     config['abstention'] = False
     config["coteaching"] = True
     config['multimodal'] = "fttrans" # clip/mlp/fttrans
+    config['latent_dim'] = 1024
+    config['tab_input_dim'] = 1
+    config['tab_emb_dims'] = [16, 32, 72]
+    config['ds_max_length'] = 128
+    config['num_hidden_layers'] = 16       # number of transformer layers
+    config['intermediate_size'] = 8192     # MLP size inside transformers
+    config['attention_heads'] = 16
 
     # Hyperparameters for training.
     config['batch_size'] = 16
     config['num_epochs'] = 100 #110
-    config['lr'] = 1e-4  #1e-4 for Resnet2+1D, 1e-5 for FTC
+    config['lr'] = 1e-4 
     config['sampler'] = 'AS' # imbalanced sampling based on AS/bicuspid/random
  
     return config
